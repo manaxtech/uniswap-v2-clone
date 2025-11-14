@@ -1,0 +1,5 @@
+UniswapV2PairTest:test_GetReserve() (gas: 18143)
+UniswapV2PairTest:test_GetToken() (gas: 19435)
+UniswapV2PairTest:test_MockUSDTDecimals() (gas: 5756)
+UniswapV2PairTest:test_NameAndSymbol() (gas: 24809)
+UniswapV2PairTest:test_Swap() (gas: 12439)
