@@ -7,6 +7,7 @@ import {DeployUniswapV2Pair} from "../../script/DeployUniswapV2Pair.s.sol";
 import {MockUSDT} from "../mocks/MockUSDT.sol";
 import {MockWETH} from "../mocks/MockWETH.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {UniswapV2Factory} from "../../src/core/UniswapV2Factory.sol";
 
 
 contract SwapperContract {
@@ -24,6 +25,9 @@ contract UniswapV2PairTest is Test {
     DeployUniswapV2Pair deployer;
     UniswapV2Pair pair;
 
+    UniswapV2Factory feeToZeroFactory;
+    UniswapV2Factory factory;
+
     MockUSDT mockUSDT;
     MockWETH mockWETH;
 
@@ -38,6 +42,8 @@ contract UniswapV2PairTest is Test {
     address swapper4 = makeAddr("swapper4");
 
     address swapperContractAddress;
+
+    address feeReceiver = makeAddr("fee taker");
 
     uint256 public LP_INITIAL_USDT_AMOUNT = 1000e6;
     uint256 public LP_INITIAL_WETH_AMOUNT = 100e18;
@@ -58,14 +64,19 @@ contract UniswapV2PairTest is Test {
         swapperContractAddress = address(new SwapperContract());
 
         mockUSDT.mint(lp_1, LP_INITIAL_USDT_AMOUNT);
+        mockUSDT.mint(lp_2, LP_INITIAL_USDT_AMOUNT);
 
         mockUSDT.mint(swapper1, 120e6);
         mockUSDT.mint(swapperContractAddress, 120e6);
         
 
-        vm.deal(lp_1, 100 ether);
+        vm.deal(lp_1, LP_INITIAL_WETH_AMOUNT);
         vm.prank(lp_1);
-        mockWETH.mint{value: 100 ether}();
+        mockWETH.mint{value: LP_INITIAL_WETH_AMOUNT}();
+
+        vm.deal(lp_2, LP_INITIAL_WETH_AMOUNT);
+        vm.prank(lp_2);
+        mockWETH.mint{value: LP_INITIAL_WETH_AMOUNT}();
 
         vm.deal(swapper1, 20 ether);
         vm.prank(swapper1);
@@ -75,8 +86,10 @@ contract UniswapV2PairTest is Test {
         vm.prank(swapperContractAddress);
         mockWETH.mint{value: 20 ether}();
 
+        feeToZeroFactory = new UniswapV2Factory(address(0));
+        factory = new UniswapV2Factory(feeReceiver);
         deployer = new DeployUniswapV2Pair();
-        pair = UniswapV2Pair(deployer.run(address(mockWETH), address(mockUSDT)));
+        pair = UniswapV2Pair(deployer.run(address(mockWETH), address(mockUSDT), address (feeToZeroFactory)));
     }
 
     function test_MockUSDTDecimals() public view {
@@ -121,6 +134,161 @@ contract UniswapV2PairTest is Test {
         assertEq(reserve0Amount, 0);
         assertEq(reserve1Amount, 0);
         assertEq(lastTimestamp, 0);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////// MINT //////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    function test_MintFirstTime() public {
+        uint256 firstWethDepositAmount = 17_638_522_379_581;
+
+        // usdt/weth = 3214.214817996 / (1wethdecimal/1usdtdecimal)
+        // weth*usdt = 1e18
+        // weth**2 * price = (1wethdecimal/1usdtdecimal) * 1ether
+        // weth = Math.sqrt(Math.mulDiv((1wethdecimal/1usdtdecimal), 1ether, price))
+
+        // usdt = 56,694
+        uint256 firstUsdtDepositAmount = 1 ether / firstWethDepositAmount;
+        
+        vm.startPrank(lp_2);
+        mockUSDT.approve(address(pair), firstUsdtDepositAmount);
+        mockWETH.approve(address(pair), firstWethDepositAmount);
+        pair.mint(lp_2, firstWethDepositAmount, firstUsdtDepositAmount);
+        vm.stopPrank();
+
+        uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
+        uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (uint256 reserve0, uint256 reserve1, uint256 lastTimestamp) = pair.getReserves();
+
+        uint256 lp_shareBalance = pair.balanceOf(lp_2);
+        console2.log(lp_shareBalance);
+
+        assert(pairWethBalanceAfter == firstWethDepositAmount);
+        assert(pairUsdtBalanceAfter == firstUsdtDepositAmount);
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        assert(lastTimestamp == 1);
+    }
+
+    function test_MintSecondTime() public {
+        uint256 firstWethDepositAmount = 17_638_522_379_581;
+        uint256 firstUsdtDepositAmount = 1 ether / firstWethDepositAmount;
+        
+        vm.startPrank(lp_2);
+        mockUSDT.approve(address(pair), firstUsdtDepositAmount);
+        mockWETH.approve(address(pair), firstWethDepositAmount);
+        pair.mint(lp_2, firstWethDepositAmount, firstUsdtDepositAmount);
+        vm.stopPrank();
+
+        (uint256 reserve0, uint256 reserve1, ) = pair.getReserves();
+        uint256 secondUsdtDeposit = 1000e6;
+        // 0.311117973323120612e18
+        uint256 secondWethDeposit = (reserve0 * secondUsdtDeposit) / reserve1;
+        
+        vm.startPrank(lp_1);
+        mockUSDT.approve(address(pair), secondUsdtDeposit);
+        mockWETH.approve(address(pair), secondWethDeposit);
+        pair.mint(lp_1, secondWethDeposit, secondUsdtDeposit);
+        vm.stopPrank();
+
+        uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
+        uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (reserve0, reserve1, ) = pair.getReserves();
+
+        uint256 lp_shareBalance = pair.balanceOf(lp_1);
+        console2.log(lp_shareBalance);
+        // 17,638.522379580999976728
+        assert(pairWethBalanceAfter == firstWethDepositAmount+secondWethDeposit);
+        assert(pairUsdtBalanceAfter == firstUsdtDepositAmount+secondUsdtDeposit);
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        // assert(lastTimestamp == 1);
+    }
+
+    function test_MintSecondTimeWithFee() public {
+        uint256 firstWethDepositAmount = 17_638_522_379_581;
+        uint256 firstUsdtDepositAmount = 1 ether / firstWethDepositAmount;
+        
+        vm.startPrank(lp_2);
+        mockUSDT.approve(address(pair), firstUsdtDepositAmount);
+        mockWETH.approve(address(pair), firstWethDepositAmount);
+        pair.mint(lp_2, firstWethDepositAmount, firstUsdtDepositAmount);
+        vm.stopPrank();
+
+        pair.setFactory(address(factory));
+
+        (uint256 reserve0, uint256 reserve1, ) = pair.getReserves();
+        uint256 secondUsdtDeposit = 1000e6;
+        // 0.311117973323120612e18
+        uint256 secondWethDeposit = (reserve0 * secondUsdtDeposit) / reserve1;
+        
+        vm.startPrank(lp_1);
+        mockUSDT.approve(address(pair), secondUsdtDeposit);
+        mockWETH.approve(address(pair), secondWethDeposit);
+        pair.mint(lp_1, secondWethDeposit, secondUsdtDeposit);
+        vm.stopPrank();
+
+        uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
+        uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (reserve0, reserve1, ) = pair.getReserves();
+
+        console2.log("Fee Address share balance:", pair.balanceOf(feeReceiver));
+        
+        assert(pairWethBalanceAfter == firstWethDepositAmount+secondWethDeposit);
+        assert(pairUsdtBalanceAfter == firstUsdtDepositAmount+secondUsdtDeposit);
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        // assert(lastTimestamp == 1);
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////// BURN //////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    function test_Burn() public {
+        uint256 firstWethDepositAmount = 17_638_522_379_581;
+        uint256 firstUsdtDepositAmount = 1 ether / firstWethDepositAmount;
+        
+        vm.startPrank(lp_2);
+        mockUSDT.approve(address(pair), firstUsdtDepositAmount);
+        mockWETH.approve(address(pair), firstWethDepositAmount);
+        pair.mint(lp_2, firstWethDepositAmount, firstUsdtDepositAmount);
+        vm.stopPrank();
+
+        (uint256 reserve0, uint256 reserve1, ) = pair.getReserves();
+        uint256 secondUsdtDeposit = 1000e6;
+        // 0.311117973323120612e18
+        uint256 secondWethDeposit = (reserve0 * secondUsdtDeposit) / reserve1;
+        
+        vm.startPrank(lp_1);
+        mockUSDT.approve(address(pair), secondUsdtDeposit);
+        mockWETH.approve(address(pair), secondWethDeposit);
+        pair.mint(lp_1, secondWethDeposit, secondUsdtDeposit);
+        vm.stopPrank();
+
+        uint256 lpMockWethBefore = mockWETH.balanceOf(lp_1);
+        uint256 lpMockUsdtBefore = mockUSDT.balanceOf(lp_1);
+
+        uint256 pairWethBalanceBefore = mockWETH.balanceOf(address(pair));
+        uint256 pairUsdtBalanceBefore = mockUSDT.balanceOf(address(pair));
+        (reserve0, reserve1, ) = pair.getReserves();
+
+        uint256 sharesToBurn = 17638522379580999976728;
+
+        vm.startPrank(lp_1);
+        pair.burn(sharesToBurn);
+        vm.stopPrank();
+
+        uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
+        uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (reserve0, reserve1, ) = pair.getReserves();
+
+        uint256 lpMockWethAfter = mockWETH.balanceOf(lp_1);
+        uint256 lpMockUsdtAfter = mockUSDT.balanceOf(lp_1);
+        
+        assert(pairWethBalanceAfter < pairWethBalanceBefore);
+        assert(pairUsdtBalanceAfter < pairUsdtBalanceBefore);
+
+        assert(lpMockWethAfter > lpMockWethBefore);
+        assert(lpMockUsdtAfter > lpMockUsdtBefore);
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -173,12 +341,16 @@ contract UniswapV2PairTest is Test {
 
         uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
         uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (uint256 reserve0, uint256 reserve1, uint256 lastTimestamp) = pair.getReserves();
 
         assert(swapper1WethBalanceAfter == swapper1WethBalanceBefore + mwethOut);
         assert(swapper1UsdtBalanceBefore - musdtInWithFee == swapper1UsdtBalanceAfter);
 
         assert(pairWethBalanceBefore - mwethOut == pairWethBalanceAfter);
         assert(pairUsdtBalanceAfter == pairUsdtBalanceBefore + musdtInWithFee);
+
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        assert(lastTimestamp == 1);
     }
 
     function test_SwapToken0OutSwaperContractWork() public setReserve {
@@ -202,12 +374,16 @@ contract UniswapV2PairTest is Test {
 
         uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
         uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (uint256 reserve0, uint256 reserve1, uint256 lastTimestamp) = pair.getReserves();
 
         assert(swapper1WethBalanceAfter == swapper1WethBalanceBefore + mwethOut);
         assert(swapperContractUsdtBalanceBefore - musdtInWithFee == swapperContractUsdtBalanceAfter);
 
         assert(pairWethBalanceBefore - mwethOut == pairWethBalanceAfter);
         assert(pairUsdtBalanceAfter == pairUsdtBalanceBefore + musdtInWithFee);
+
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        assert(lastTimestamp == 1);
     }
 
     function test_SwapToken0OutFailIfKNotFulfilled() public setReserve {
@@ -240,12 +416,16 @@ contract UniswapV2PairTest is Test {
 
         uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
         uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (uint256 reserve0, uint256 reserve1, uint256 lastTimestamp) = pair.getReserves();
 
         assert(swapper1WethBalanceBefore - mwethInWithFee == swapper1WethBalanceAfter);
         assert(swapper1UsdtBalanceAfter == swapper1UsdtBalanceBefore + musdtOut);
 
         assert(pairWethBalanceAfter == pairWethBalanceBefore + mwethInWithFee);
         assert(pairUsdtBalanceBefore - musdtOut == pairUsdtBalanceAfter);
+
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        assert(lastTimestamp == 1);
     }
 
     function test_SwapToken1OutSwaperContractWork() public setReserve {
@@ -271,12 +451,16 @@ contract UniswapV2PairTest is Test {
 
         uint256 pairWethBalanceAfter = mockWETH.balanceOf(address(pair));
         uint256 pairUsdtBalanceAfter = mockUSDT.balanceOf(address(pair));
+        (uint256 reserve0, uint256 reserve1, uint256 lastTimestamp) = pair.getReserves();
 
         assert(swapperContractWethBalanceBefore - mwethInWithFee == swapperContractWethBalanceAfter);
         assert(swapper1UsdtBalanceAfter == swapper1UsdtBalanceBefore + musdtOut);
 
         assert(pairWethBalanceAfter == pairWethBalanceBefore + mwethInWithFee);
         assert(pairUsdtBalanceBefore - musdtOut == pairUsdtBalanceAfter);
+
+        assert(pairWethBalanceAfter == reserve0 && pairUsdtBalanceAfter == reserve1);
+        assert(lastTimestamp == 1);
     }
 
     function test_SwapToken1OutFailIfKNotFulfilled() public setReserve {
@@ -287,5 +471,37 @@ contract UniswapV2PairTest is Test {
         vm.expectRevert(UniswapV2Pair.UniswapV2Pair__K.selector);
         vm.prank(swapper1);
         pair.swap(0, musdtOut, swapper1, bytes(""));
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////// SKIM //////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    function test_Skim() public setReserve {
+        uint256 wethDeposit = 10e18;
+        uint256 usdtDeposit = 100e6;
+        (uint256 reserve0, uint256 reserve1,) = pair.getReserves();
+        uint256 token0BalanceReserveDifferenceBeforeImbalance = mockWETH.balanceOf(address(pair)) - reserve0;
+        uint256 token1BalanceReserveDifferenceBeforeImblance = mockUSDT.balanceOf(address(pair)) - reserve1;
+
+        vm.startPrank(lp_2);
+        IERC20(address(mockUSDT)).safeTransfer(address(pair), usdtDeposit);
+        IERC20(address(mockWETH)).safeTransfer(address(pair), wethDeposit);
+        vm.stopPrank();
+
+        (reserve0, reserve1,) = pair.getReserves();
+        uint256 token0BalanceReserveDifferenceBeforeSkim = mockWETH.balanceOf(address(pair)) - reserve0;
+        uint256 token1BalanceReserveDifferenceBeforeSkim = mockUSDT.balanceOf(address(pair)) - reserve1;
+
+        vm.prank(swapper2);
+        pair.skim(swapper2);
+
+        (reserve0, reserve1,) = pair.getReserves();
+        uint256 token0BalanceReserveDifferenceAfterSkim = mockWETH.balanceOf(address(pair)) - reserve0;
+        uint256 token1BalanceReserveDifferenceAfterSkim = mockUSDT.balanceOf(address(pair)) - reserve1;
+
+        assert(token0BalanceReserveDifferenceBeforeImbalance == 0 && token1BalanceReserveDifferenceBeforeImblance == 0);
+        assert(token0BalanceReserveDifferenceBeforeSkim == wethDeposit && token1BalanceReserveDifferenceBeforeSkim == usdtDeposit);
+        assert(token0BalanceReserveDifferenceAfterSkim == 0 && token1BalanceReserveDifferenceAfterSkim == 0);
     }
 }
