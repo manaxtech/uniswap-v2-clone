@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.27;
 
-import {IUniswapV2Pair} from "./interfaces/IUniswapV2Pair.sol";
+import {IUniswapV2Pair} from "src/interfaces/IUniswapV2Pair.sol";
 import {ERC20, IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SafeERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IUniswapV2Callback} from "./interfaces/IUniswapV2Callback.sol";
-import {IUniswapV2Factory} from "./interfaces/IUniswapV2Factory.sol";
-import {Math} from "./libraries/Math.sol";
+import {IUniswapV2Callback} from "src/interfaces/IUniswapV2Callback.sol";
+import {IUniswapV2Factory} from "src/interfaces/IUniswapV2Factory.sol";
+import {Math} from "src/libraries/Math.sol";
 
 import {console2} from "forge-std/console2.sol";
 
@@ -19,7 +19,7 @@ contract UniswapV2Pair is IUniswapV2Pair, ERC20, ReentrancyGuard{
     error UniswapV2Pair__K();
     error UniswapV2Pair__RatioInconsistent();
 
-    uint256 private constant FEE = 3;
+    uint256 private s_fee = 3;
     uint256 private constant PRECISION = 1000;
 
     uint256 private constant LIQUIDITY_FEE_DENOMINATOR = 6;
@@ -45,23 +45,18 @@ contract UniswapV2Pair is IUniswapV2Pair, ERC20, ReentrancyGuard{
         uint256 amount1Out
     );
 
-    constructor(address token0, address token1, address factory)
+    constructor(address token0, address token1)
     ERC20(
         string.concat(IERC20Metadata(token0).name(), " and ", IERC20Metadata(token1).name(), " UniswapV2Pair"),
         string.concat(IERC20Metadata(token0).symbol(), "/", IERC20Metadata(token1).symbol(), " UNI-V2")
     ) {
         s_token0 = IERC20(token0);
         s_token1 = IERC20(token1);
-        // i_factory = msg.sender;
-        s_factory = factory;
-    }
-
-    function setFactory(address _factory) external {
-        s_factory = _factory;
+        s_factory = msg.sender;
     }
 
     function _mintFee(uint256 token0Amount, uint256 token1Amount) internal {
-        address feeAddress = IUniswapV2Factory(s_factory).feeTo();
+        address feeAddress = IUniswapV2Factory(s_factory).getFeeTo();
         uint256 newRootK = Math.sqrt((s_reserve0+token0Amount) * (s_reserve1 + token1Amount));
         uint256 diff = newRootK - s_rootkLast;
         if(feeAddress != address(0)) {
@@ -72,6 +67,7 @@ contract UniswapV2Pair is IUniswapV2Pair, ERC20, ReentrancyGuard{
     }
 
     // becare full to mint according to ratio to get optimaized liquidity token
+    // implement that in router
     function mint(address to, uint256 _token0Amount, uint256 _token1Amount) external nonReentrant returns (uint256 liquidity) {
         s_token0.safeTransferFrom(msg.sender, address(this), _token0Amount);
         s_token1.safeTransferFrom(msg.sender, address(this), _token1Amount);
@@ -134,8 +130,8 @@ contract UniswapV2Pair is IUniswapV2Pair, ERC20, ReentrancyGuard{
         // uint256 k = s_reserve0 * s_reserve1;
         // uint256 k_new = ((s_reserve0+amount0InWithFee)-amount0Out) * ((s_reserve1+amount1InWithFee)-amount1Out);
         {
-            uint256 balance0Adjusted = (balance0 * PRECISION) - (amount0In * FEE);
-            uint256 balance1Adjusted = (balance1 * PRECISION) - (amount1In * FEE);
+            uint256 balance0Adjusted = (balance0 * PRECISION) - (amount0In * s_fee);
+            uint256 balance1Adjusted = (balance1 * PRECISION) - (amount1In * s_fee);
 
             uint256 k = s_reserve0 * s_reserve1 * (1000**2);
             uint256 k_new = balance0Adjusted * balance1Adjusted;
@@ -170,6 +166,10 @@ contract UniswapV2Pair is IUniswapV2Pair, ERC20, ReentrancyGuard{
         s_token1.safeTransfer(to, (s_token1.balanceOf(address(this)) - s_reserve1));
     }
 
+    function sync() external nonReentrant {
+        _updateReserve(s_token0.balanceOf(address(this)), s_token1.balanceOf(address(this)));
+    }
+
     /**
      * @dev returns both reserve value and last time they were updated
      * @return _reserve0 is the amount of token0 that are in first reserve(s_reserve0)
@@ -190,6 +190,10 @@ contract UniswapV2Pair is IUniswapV2Pair, ERC20, ReentrancyGuard{
     function getTokens() external view returns(address _token0, address _token1) {
         _token0 = address(s_token0);
         _token1 = address(s_token1);
+    }
+
+    function getFeeAndPrecision() external view returns (uint256 fee, uint256 precision) {
+        return (s_fee, PRECISION);
     }
 
 }
